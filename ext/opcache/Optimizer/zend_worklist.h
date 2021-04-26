@@ -67,11 +67,11 @@ static inline int zend_worklist_stack_pop(zend_worklist_stack *stack)
 }
 
 typedef struct _zend_worklist {
-	zend_bitset visited;
+	zend_bitset visited; //long *
 	zend_worklist_stack stack;
 } zend_worklist;
 
-#define ZEND_WORKLIST_ALLOCA(w, _len, use_heap) do { \
+#define ZEND_WORKLIST_ALLOCA(w, _len, use_heap) do { \//bitset和buf申请时合并在一起，最后是bitmap
 		(w)->stack.buf = (int*)do_alloca(ZEND_MM_ALIGNED_SIZE(sizeof(int) * _len) + sizeof(zend_ulong) * zend_bitset_len(_len), use_heap); \
 		(w)->stack.len = 0; \
 		(w)->stack.capacity = _len; \
@@ -96,7 +96,7 @@ static inline int zend_worklist_len(zend_worklist *worklist)
 
 static inline int zend_worklist_push(zend_worklist *worklist, int i)
 {
-	ZEND_ASSERT(i >= 0 && i < worklist->stack.capacity);
+	ZEND_ASSERT(i >= 0 && i < worklist->stack.capacity); //我在思考这到底是个什么东西？ 固定的work数量，不同work_i 往里面扔？    
 
 	if (zend_bitset_in(worklist->visited, i)) {
 		return 0;

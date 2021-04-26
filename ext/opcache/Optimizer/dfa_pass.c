@@ -97,11 +97,12 @@ int zend_dfa_analyze_op_array(zend_op_array *op_array, zend_optimizer_ctx *ctx, 
 		zend_dump_op_array(op_array, ZEND_DUMP_SSA, "dfa ssa", ssa);
 	}
 
-
+	//use_def chain作用就是能告诉在你想知道，当前变量在哪定义的.
 	if (zend_ssa_compute_use_def_chains(&ctx->arena, op_array, ssa) != SUCCESS){
 		return FAILURE;
 	}
 
+	//去掉一些实际上并没有使用的变量依赖关系.
 	if (zend_ssa_find_false_dependencies(op_array, ssa) != SUCCESS) {
 		return FAILURE;
 	}

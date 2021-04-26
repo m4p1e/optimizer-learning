@@ -46,7 +46,7 @@ typedef struct _zend_ssa_range_constraint {
 	int                    min_ssa_var; /* ((min_var>0) ? MIN(ssa_var) : 0) + range.min */
 	int                    max_ssa_var; /* ((max_var>0) ? MAX(ssa_var) : 0) + range.max */
 	zend_ssa_negative_lat  negative;
-} zend_ssa_range_constraint;
+} zend_ssa_range_constraint; 
 
 typedef struct _zend_ssa_type_constraint {
 	uint32_t               type_mask;   /* Type mask to intersect with */

@@ -274,7 +274,7 @@ int zend_ssa_find_false_dependencies(const zend_op_array *op_array, zend_ssa *ss
 		ssa_vars[i].no_val = 1; /* mark as unused */
 		use = ssa->vars[i].use_chain;
 		while (use >= 0) {
-			if (!zend_ssa_is_no_val_use(&op_array->opcodes[use], &ssa->ops[use], i)) {
+			if (!zend_ssa_is_no_val_use(&op_array->opcodes[use], &ssa->ops[use], i)) {//判断一些出现在操作数里面的var，但是实际上并没有使用.
 				ssa_vars[i].no_val = 0; /* used directly */
 				zend_bitset_incl(worklist, i);
 				break;
@@ -283,7 +283,7 @@ int zend_ssa_find_false_dependencies(const zend_op_array *op_array, zend_ssa *ss
 		}
 	}
 
-	WHILE_WORKLIST(worklist, zend_bitset_len(ssa_vars_count), i) {
+	WHILE_WORKLIST(worklist, zend_bitset_len(ssa_vars_count), i) {//上面确定的一些没有使用的var，可能被phi函数潜在使用了.
 		if (ssa_vars[i].definition_phi) {
 			/* mark all possible sources as used */
 			p = ssa_vars[i].definition_phi;

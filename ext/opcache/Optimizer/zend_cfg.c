@@ -632,7 +632,7 @@ int zend_cfg_build_predecessors(zend_arena **arena, zend_cfg *cfg) /* {{{ */
 			b->predecessor_offset = edges;
 			edges += b->predecessors_count;
 			b->predecessors_count = 0;
-		}
+		}	
 	}
 
 	for (j = 0; j < cfg->blocks_count; j++) {
@@ -812,36 +812,38 @@ int zend_cfg_identify_loops(const zend_op_array *op_array, zend_cfg *cfg) /* {{{
 
 	/* We don't materialize the DJ spanning tree explicitly, as we are only interested in ancestor
 	 * queries. These are implemented by checking entry/exit times of the DFS search. */
-	entry_times = do_alloca(2 * sizeof(int) * cfg->blocks_count, tree_use_heap);
+	entry_times = do_alloca(2 * sizeof(int) * cfg->blocks_count, tree_use_heap); //那到底什么是entry和exit 次数？？往下读吧
 	exit_times = entry_times + cfg->blocks_count;
 	memset(entry_times, -1, 2 * sizeof(int) * cfg->blocks_count);
 
-	zend_worklist_push(&work, 0);
+	zend_worklist_push(&work, 0); //先把entry放进worklist
 	time = 0;
-	while (zend_worklist_len(&work)) {
+	while (zend_worklist_len(&work)) {//似乎并没有显式的Dj树的构造出来，只在dom树上额外做一些操作确定join edge
 	next:
 		i = zend_worklist_peek(&work);
-		if (entry_times[i] == -1) {
+		if (entry_times[i] == -1) {//
 			entry_times[i] = time++;
 		}
 		/* Visit blocks immediately dominated by i. */
 		for (j = blocks[i].children; j >= 0; j = blocks[j].next_child) {
-			if (zend_worklist_push(&work, j)) {
+			if (zend_worklist_push(&work, j)) {//深度遍历的策略，dom树上的子节点，没有子节点再去尝试看join edge的情况。
 				goto next;
 			}
 		}
 		/* Visit join edges.  */
-		for (j = 0; j < blocks[i].successors_count; j++) {
+		for (j = 0; j < blocks[i].successors_count; j++) {//
 			int succ = blocks[i].successors[j];
-			if (blocks[succ].idom == i) {
+			if (blocks[succ].idom == i) {//根据join edge定义，x-> y ,y不是x的idom
 				continue;
-			} else if (zend_worklist_push(&work, succ)) {
+			} else if (zend_worklist_push(&work, succ)) {//深度遍历的策略
 				goto next;
 			}
 		}
-		exit_times[i] = time++;
+		exit_times[i] = time++;//
 		zend_worklist_pop(&work);
 	}
+
+	//进入的节点时间早，退出节点的时间完就是ancestor节点，A_entry B_entry B_exit A_exit A是B的祖先节点，在DFS中
 
 	/* Sort blocks by decreasing level, which is the order in which we want to process them */
 	sorted_blocks = do_alloca(sizeof(block_info) * cfg->blocks_count, sorted_blocks_use_heap);
@@ -849,12 +851,13 @@ int zend_cfg_identify_loops(const zend_op_array *op_array, zend_cfg *cfg) /* {{{
 		sorted_blocks[i].id = i;
 		sorted_blocks[i].level = blocks[i].level;
 	}
+	//算法是从 Dj graph从下往上的处理的，所以先把bb按level从高到底排个序。
 	zend_sort(sorted_blocks, cfg->blocks_count, sizeof(block_info),
 		(compare_func_t) compare_block_level, (swap_func_t) swap_blocks);
 
 	/* Identify loops.  See Sreedhar et al, "Identifying Loops Using DJ
 	   Graphs".  */
-
+	
 	for (n = 0; n < cfg->blocks_count; n++) {
 		i = sorted_blocks[n].id;
 
@@ -864,34 +867,34 @@ int zend_cfg_identify_loops(const zend_op_array *op_array, zend_cfg *cfg) /* {{{
 
 			/* A join edge is one for which the predecessor does not
 			   immediately dominate the successor.  */
-			if (blocks[i].idom == pred) {
+			if (blocks[i].idom == pred) { //我们只关注join-edge!
 				continue;
 			}
 
 			/* In a loop back-edge (back-join edge), the successor dominates
 			   the predecessor.  */
-			if (dominates(blocks, i, pred)) {
+			if (dominates(blocks, i, pred)) { // 找到了这样一条back-edge， 我们就找到了一个reducible loop
 				blocks[i].flags |= ZEND_BB_LOOP_HEADER;
 				flag &= ~ZEND_FUNC_NO_LOOPS;
-				zend_worklist_push(&work, pred);
+				zend_worklist_push(&work, pred);//这里收集back-edge所在的前驱是用于确定loop header所对应的loop body。
 			} else {
 				/* Otherwise it's a cross-join edge.  See if it's a branch
 				   to an ancestor on the DJ spanning tree.  */
-				if (entry_times[pred] > entry_times[i] && exit_times[pred] < exit_times[i]) {
+				if (entry_times[pred] > entry_times[i] && exit_times[pred] < exit_times[i]) { //对于irreducible loop，它有多个loop headers，我们用生成树上最前面那个block作为loop header;
 					blocks[i].flags |= ZEND_BB_IRREDUCIBLE_LOOP;
 					flag |= ZEND_FUNC_IRREDUCIBLE;
 					flag &= ~ZEND_FUNC_NO_LOOPS;
 				}
 			}
 		}
-		while (zend_worklist_len(&work)) {
+		while (zend_worklist_len(&work)) { //给loop body里面的bb设置上loop header?
 			j = zend_worklist_pop(&work);
-			while (blocks[j].loop_header >= 0) {
+			while (blocks[j].loop_header >= 0) {//考虑循环嵌套的情况，跳过已经确定好loop header的block
 				j = blocks[j].loop_header;
 			}
 			if (j != i) {
 				blocks[j].loop_header = i;
-				for (k = 0; k < blocks[j].predecessors_count; k++) {
+				for (k = 0; k < blocks[j].predecessors_count; k++) {//类似loop body确定是一个从下向上的过程！
 					zend_worklist_push(&work, cfg->predecessors[blocks[j].predecessor_offset + k]);
 				}
 			}

@@ -38,20 +38,20 @@ static zend_bool will_rejoin(
 	int i;
 	for (i = 0; i < block->predecessors_count; i++) {
 		int predecessor = cfg->predecessors[block->predecessor_offset + i];
-		if (predecessor == exclude) {
+		if (predecessor == exclude) { /*忽略的一些前驱，例如已知的from*/
 			continue;
 		}
 
 		/* The variable is changed in this predecessor,
 		 * so we will not rejoin with the original value. */
 		// TODO: This should not be limited to the direct predecessor block.
-		if (DFG_ISSET(dfg->def, dfg->size, predecessor, var)) {
+		if (DFG_ISSET(dfg->def, dfg->size, predecessor, var)) { /*pi相关的var，在前驱里面改变了，就代表我们插pi是有意义的，这里还有一个todo，不应该是只考虑直接前驱... 对的*/
 			continue;
 		}
 
 		/* The other successor dominates this predecessor,
 		 * so we will get the original value from it. */
-		if (dominates(cfg->blocks, other_successor, predecessor)) {
+		if (dominates(cfg->blocks, other_successor, predecessor)) { /*好家伙 other_successor直接dominate当前这个predecessor*/
 			return 1;
 		}
 	}
@@ -63,7 +63,7 @@ static zend_bool needs_pi(const zend_op_array *op_array, zend_dfg *dfg, zend_ssa
 	zend_basic_block *from_block, *to_block;
 	int other_successor;
 
-	if (!DFG_ISSET(dfg->in, dfg->size, to, var)) {
+	if (!DFG_ISSET(dfg->in, dfg->size, to, var)) {/*变量不活跃, in , out 计算与变量的活跃有关*/
 		/* Variable is not live, certainly won't benefit from pi */
 		return 0;
 	}
@@ -71,16 +71,19 @@ static zend_bool needs_pi(const zend_op_array *op_array, zend_dfg *dfg, zend_ssa
 	/* Make sure that both successors of the from block aren't the same. Pi nodes are associated
 	 * with predecessor blocks, so we can't distinguish which edge the pi belongs to. */
 	from_block = &ssa->cfg.blocks[from];
-	ZEND_ASSERT(from_block->successors_count == 2);
+	ZEND_ASSERT(from_block->successors_count == 2);/*这里在干嘛呢？ 会存在有两个后继都相同的呢吗？ pi的区分于incoming edge有关，如果出现两条一样的edge，如果出现pi互斥的情况不就gg了？*/
 	if (from_block->successors[0] == from_block->successors[1]) {
 		return 0;
 	}
 
 	to_block = &ssa->cfg.blocks[to];
-	if (to_block->predecessors_count == 1) {
+	if (to_block->predecessors_count == 1) {/*一个incoming edge,局部约束的best case !*/
 		/* Always place pi if one predecessor (an if branch) */
 		return 1;
 	}
+
+	/* 两个branch可以merge吗？会导致插pi没有任何意义
+	*/
 
 	/* Check whether we will rejoin with the original value coming from the other successor,
 	 * in which case the pi node will not have an effect. */
@@ -102,26 +105,26 @@ static zend_ssa_phi *add_pi(
 	phi = zend_arena_calloc(arena, 1,
 		ZEND_MM_ALIGNED_SIZE(sizeof(zend_ssa_phi)) +
 		ZEND_MM_ALIGNED_SIZE(sizeof(int) * ssa->cfg.blocks[to].predecessors_count) +
-		sizeof(void*) * ssa->cfg.blocks[to].predecessors_count);
+		sizeof(void*) * ssa->cfg.blocks[to].predecessors_count);//basic of zend_ssa_phi  +  int+void *??? 目标bb的前驱个数？
 	phi->sources = (int*)(((char*)phi) + ZEND_MM_ALIGNED_SIZE(sizeof(zend_ssa_phi)));
 	memset(phi->sources, 0xff, sizeof(int) * ssa->cfg.blocks[to].predecessors_count);
 	phi->use_chains = (zend_ssa_phi**)(((char*)phi->sources) + ZEND_MM_ALIGNED_SIZE(sizeof(int) * ssa->cfg.blocks[to].predecessors_count));
 
-	phi->pi = from;
+	phi->pi = from; /*this is pi*/
 	phi->var = var;
 	phi->ssa_var = -1;
 	phi->next = ssa->blocks[to].phis;
-	ssa->blocks[to].phis = phi;
+	ssa->blocks[to].phis = phi; /*phi chain*/
 
 	/* Block "to" now defines "var" via the pi statement, so add it to the "def" set. Note that
 	 * this is not entirely accurate, because the pi is actually placed along the edge from->to.
 	 * If there is a back-edge to "to" this may result in non-minimal SSA form. */
-	DFG_SET(dfg->def, dfg->size, to, var);
+	DFG_SET(dfg->def, dfg->size, to, var);//引入pi等价于你定义了一遍var. 提到的不完全正确是因为pi仅仅是靠incoming edge定义的，这样做可能就会造成not-minimal
 
 	/* If there are multiple predecessors in the target block, we need to place a phi there.
 	 * However this can (generally) not be expressed in terms of dominance frontiers, so place it
 	 * explicitly. dfg->use here really is dfg->phi, we're reusing the set. */
-	if (ssa->cfg.blocks[to].predecessors_count > 1) {
+	if (ssa->cfg.blocks[to].predecessors_count > 1) {/*多个前驱 pi是否能保证作用就很难说了，还是得用phi来说明问题*/
 		DFG_SET(dfg->use, dfg->size, to, var);
 	}
 
@@ -183,20 +186,24 @@ static inline uint32_t mask_for_type_check(uint32_t type) {
 
 /* We can interpret $a + 5 == 0 as $a = 0 - 5, i.e. shift the adjustment to the other operand.
  * This negated adjustment is what is written into the "adjustment" parameter. */
+
+/*
+	当$a + 5 == 0 成立的时候,等价于$a = 0 - 5;
+*/
 static int find_adjusted_tmp_var(const zend_op_array *op_array, uint32_t build_flags, zend_op *opline, uint32_t var_num, zend_long *adjustment) /* {{{ */
 {
 	zend_op *op = opline;
 	zval *zv;
 
-	while (op != op_array->opcodes) {
+	while (op != op_array->opcodes) { /*找expr中cv*/
 		op--;
 		if (op->result_type != IS_TMP_VAR || op->result.var != var_num) {
 			continue;
 		}
 
-		if (op->opcode == ZEND_POST_DEC) {
+		if (op->opcode == ZEND_POST_DEC) { /*这里为什么只关注post而不是pre呢？ 例如$a++ == 0执行完之后$a==1； ++$a = 0执行完之后$a==0*/
 			if (op->op1_type == IS_CV) {
-				*adjustment = -1;
+				*adjustment = -1;/*adjutment是对另一侧的操作数的调整*/
 				return EX_VAR_TO_NUM(op->op1.var);
 			}
 		} else if (op->opcode == ZEND_POST_INC) {
@@ -208,9 +215,9 @@ static int find_adjusted_tmp_var(const zend_op_array *op_array, uint32_t build_f
 			if (op->op1_type == IS_CV && op->op2_type == IS_CONST) {
 				zv = CRT_CONSTANT_EX(op_array, op, op->op2);
 				if (Z_TYPE_P(zv) == IS_LONG
-				 && Z_LVAL_P(zv) != ZEND_LONG_MIN) {
+				 && Z_LVAL_P(zv) != ZEND_LONG_MIN) { /*考虑取反溢出*/
 					*adjustment = -Z_LVAL_P(zv);
-					return EX_VAR_TO_NUM(op->op1.var);
+					return EX_VAR_TO_NUM(op->op1.var); 
 				}
 			} else if (op->op2_type == IS_CV && op->op1_type == IS_CONST) {
 				zv = CRT_CONSTANT_EX(op_array, op, op->op1);
@@ -246,7 +253,7 @@ static void place_essa_pis(
 	int j, blocks_count = ssa->cfg.blocks_count;
 	for (j = 0; j < blocks_count; j++) {
 		zend_ssa_phi *pi;
-		zend_op *opline = op_array->opcodes + blocks[j].start + blocks[j].len - 1;
+		zend_op *opline = op_array->opcodes + blocks[j].start + blocks[j].len - 1; //最后一个opline
 		int bt; /* successor block number if a condition is true */
 		int bf; /* successor block number if a condition is false */
 
@@ -256,7 +263,7 @@ static void place_essa_pis(
 		/* the last instruction of basic block is conditional branch,
 		 * based on comparison of CV(s)
 		 */
-		switch (opline->opcode) {
+		switch (opline->opcode) {//why 条件分支呢？
 			case ZEND_JMPZ:
 			case ZEND_JMPZNZ:
 				bf = blocks[j].successors[0];
@@ -268,9 +275,9 @@ static void place_essa_pis(
 				break;
 			case ZEND_COALESCE:
 				if (opline->op1_type == IS_CV) {
-					int var = EX_VAR_TO_NUM(opline->op1.var);
-					if ((pi = add_pi(arena, op_array, dfg, ssa, j, blocks[j].successors[0], var))) {
-						pi_not_type_mask(pi, MAY_BE_NULL);
+					int var = EX_VAR_TO_NUM(opline->op1.var);/*$a=$c??$b  =>  $a = phi($c,$b)*/
+					if ((pi = add_pi(arena, op_array, dfg, ssa, j, blocks[j].successors[0], var))) {//coalesce true
+						pi_not_type_mask(pi, MAY_BE_NULL); /*$a=$c , $c当然不是NULL了*/
 					}
 				}
 				continue;
@@ -278,7 +285,7 @@ static void place_essa_pis(
 				if (opline->op1_type == IS_CV) {
 					int var = EX_VAR_TO_NUM(opline->op1.var);
 					if ((pi = add_pi(arena, op_array, dfg, ssa, j, blocks[j].successors[1], var))) {
-						pi_not_type_mask(pi, MAY_BE_NULL);
+						pi_not_type_mask(pi, MAY_BE_NULL); /*这个8.0的新特性，走follow这条branch肯定判定对象不是NULL*/
 					}
 				}
 				continue;
@@ -290,39 +297,39 @@ static void place_essa_pis(
 		     (opline-1)->opcode == ZEND_IS_NOT_EQUAL ||
 		     (opline-1)->opcode == ZEND_IS_SMALLER ||
 		     (opline-1)->opcode == ZEND_IS_SMALLER_OR_EQUAL) &&
-		    opline->op1.var == (opline-1)->result.var) {
+		    opline->op1.var == (opline-1)->result.var) {/*到这里来的只有jmpz jmpnz jmznz, smart branch ???*/
 			int  var1 = -1;
 			int  var2 = -1;
-			zend_long val1 = 0;
-			zend_long val2 = 0;
+			zend_long val1 = 0; /*左加*/
+			zend_long val2 = 0; /*右加*/
 //			long val = 0;
 
-			if ((opline-1)->op1_type == IS_CV) {
+			if ((opline-1)->op1_type == IS_CV) {/*千方百计的想拿到cv*/
 				var1 = EX_VAR_TO_NUM((opline-1)->op1.var);
-			} else if ((opline-1)->op1_type == IS_TMP_VAR) {
+			} else if ((opline-1)->op1_type == IS_TMP_VAR) { //check LHS里面是不是"cv op const"的样式,这样的样式是可以调整的.
 				var1 = find_adjusted_tmp_var(
 					op_array, build_flags, opline, (opline-1)->op1.var, &val2);
 			}
 
 			if ((opline-1)->op2_type == IS_CV) {
 				var2 = EX_VAR_TO_NUM((opline-1)->op2.var);
-			} else if ((opline-1)->op2_type == IS_TMP_VAR) {
+			} else if ((opline-1)->op2_type == IS_TMP_VAR) {//继而check RHS
 				var2 = find_adjusted_tmp_var(
 					op_array, build_flags, opline, (opline-1)->op2.var, &val1);
 			}
 
-			if (var1 >= 0 && var2 >= 0) {
-				if (!zend_sub_will_overflow(val1, val2) && !zend_sub_will_overflow(val2, val1)) {
-					zend_long tmp = val1;
+			if (var1 >= 0 && var2 >= 0) {/*最好的情况是LRH和RHS都是可以make range*/
+				if (!zend_sub_will_overflow(val1, val2) && !zend_sub_will_overflow(val2, val1)) { //需要重新调整体一下adjustment.
+					zend_long tmp = val1; /*$a+5 = $b+6 => val1=-6 && val2=-5 => $a=$b+(-5-(-6)) and $a+(-6-(-5)) =$b*/
 					val1 -= val2;
 					val2 -= tmp;
-				} else {
+				} else {/*溢出会发什么呢？*/
 					var1 = -1;
 					var2 = -1;
 				}
-			} else if (var1 >= 0 && var2 < 0) {
+			} else if (var1 >= 0 && var2 < 0) {/*只能拿到左边的cv*/
 				zend_long add_val2 = 0;
-				if ((opline-1)->op2_type == IS_CONST) {
+				if ((opline-1)->op2_type == IS_CONST) { /*有一种特殊情况，假设右边就是const*/
 					zval *zv = CRT_CONSTANT_EX(op_array, (opline-1), (opline-1)->op2);
 
 					if (Z_TYPE_P(zv) == IS_LONG) {
@@ -337,14 +344,14 @@ static void place_essa_pis(
 				} else {
 					var1 = -1;
 				}
-				if (!zend_add_will_overflow(val2, add_val2)) {
+				if (!zend_add_will_overflow(val2, add_val2)) {/*也能保证右边的加运算*/
 					val2 += add_val2;
 				} else {
 					var1 = -1;
 				}
-			} else if (var1 < 0 && var2 >= 0) {
+			} else if (var1 < 0 && var2 >= 0) {/*只能拿到右边的cv变量*/
 				zend_long add_val1 = 0;
-				if ((opline-1)->op1_type == IS_CONST) {
+				if ((opline-1)->op1_type == IS_CONST) {/*同样也只考虑左边是const特殊情况*/
 					zval *zv = CRT_CONSTANT_EX(op_array, (opline-1), (opline-1)->op1);
 					if (Z_TYPE_P(zv) == IS_LONG) {
 						add_val1 = Z_LVAL_P(CRT_CONSTANT_EX(op_array, (opline-1), (opline-1)->op1));
@@ -358,16 +365,16 @@ static void place_essa_pis(
 				} else {
 					var2 = -1;
 				}
-				if (!zend_add_will_overflow(val1, add_val1)) {
+				if (!zend_add_will_overflow(val1, add_val1)) {/*维持左边的加运算*/
 					val1 += add_val1;
 				} else {
 					var2 = -1;
 				}
 			}
 
-			if (var1 >= 0) {
+			if (var1 >= 0) {/*经典range，是我没想到的，极致而优雅*/
 				if ((opline-1)->opcode == ZEND_IS_EQUAL) {
-					if ((pi = add_pi(arena, op_array, dfg, ssa, j, bt, var1))) {
+					if ((pi = add_pi(arena, op_array, dfg, ssa, j, bt, var1))) { /*条件分支下变量约束，extended ssa的作用带路径敏感的中间表示*/
 						pi_range_equals(pi, var2, val2);
 					}
 					if ((pi = add_pi(arena, op_array, dfg, ssa, j, bf, var1))) {
@@ -549,7 +556,7 @@ static zend_always_inline int _zend_ssa_rename_op(const zend_op_array *op_array,
 {
 	const zend_op *next;
 
-	if (opline->op1_type & (IS_CV|IS_VAR|IS_TMP_VAR)) {
+	if (opline->op1_type & (IS_CV|IS_VAR|IS_TMP_VAR)) { //先考虑use-var
 		ssa_ops[k].op1_use = var[EX_VAR_TO_NUM(opline->op1.var)];
 		//USE_SSA_VAR(op_array->last_var + opline->op1.var)
 	}
@@ -559,12 +566,12 @@ static zend_always_inline int _zend_ssa_rename_op(const zend_op_array *op_array,
 	}
 	if ((build_flags & ZEND_SSA_USE_CV_RESULTS)
 	 && opline->result_type == IS_CV
-	 && opline->opcode != ZEND_RECV) {
+	 && opline->opcode != ZEND_RECV) { //sepcial 恶心的优化
 		ssa_ops[k].result_use = var[EX_VAR_TO_NUM(opline->result.var)];
 		//USE_SSA_VAR(op_array->last_var + opline->result.var)
 	}
 
-	switch (opline->opcode) {
+	switch (opline->opcode) {//再考虑definition, 同时更新var_map
 		case ZEND_ASSIGN:
 			if ((build_flags & ZEND_SSA_RC_INFERENCE) && opline->op2_type == IS_CV) {
 				ssa_ops[k].op2_def = ssa_vars_count;
@@ -786,21 +793,21 @@ static int zend_ssa_rename(const zend_op_array *op_array, uint32_t build_flags, 
 	ALLOCA_FLAG(use_heap = 0);
 
 	// FIXME: Can we optimize this copying out in some cases?
-	if (blocks[n].next_child >= 0) {
-		tmp = do_alloca(sizeof(int) * (op_array->last_var + op_array->T), use_heap);
-		memcpy(tmp, var, sizeof(int) * (op_array->last_var + op_array->T));
+	if (blocks[n].next_child >= 0) {//var就是一个definition的map. 没有兄弟节点代表这个block是当前level第一个遍历的， 肯定来自dominator. 有兄弟节点的index，代表不是从dominator来的
+		tmp = do_alloca(sizeof(int) * (op_array->last_var + op_array->T), use_heap); //也就是保持了var_map是来immediate dominator的. 这里好像有点内存损耗，使用ssa那样的chain来代替var_map也许不错，但是可能频繁申请内存. 
+		memcpy(tmp, var, sizeof(int) * (op_array->last_var + op_array->T)); //每产生个分支都会copy一个var_map
 		var = tmp;
 	}
 
-	if (ssa_blocks[n].phis) {
+	if (ssa_blocks[n].phis) {//count rename
 		zend_ssa_phi *phi = ssa_blocks[n].phis;
 		do {
-			if (phi->ssa_var < 0) {
-				phi->ssa_var = ssa_vars_count;
-				var[phi->var] = ssa_vars_count;
-				ssa_vars_count++;
+			if (phi->ssa_var < 0) { //ssa_var处于初始化状态
+				phi->ssa_var = ssa_vars_count; //var重命名
+				var[phi->var] = ssa_vars_count; //更新var重命名
+				ssa_vars_count++; //order!
 			} else {
-				var[phi->var] = phi->ssa_var;
+				var[phi->var] = phi->ssa_var; //已经初始化过ssa_var_name, 直接使用
 			}
 			phi = phi->next;
 		} while (phi);
@@ -810,7 +817,7 @@ static int zend_ssa_rename(const zend_op_array *op_array, uint32_t build_flags, 
 	end = opline + blocks[n].len;
 	for (; opline < end; opline++) {
 		uint32_t k = opline - op_array->opcodes;
-		if (opline->opcode != ZEND_OP_DATA) {
+		if (opline->opcode != ZEND_OP_DATA) { //对每一个opline构造zend_ssa_op.
 			ssa_vars_count = _zend_ssa_rename_op(op_array, opline, k, build_flags, ssa_vars_count, ssa_ops, var);
 		}
 	}
@@ -818,14 +825,14 @@ static int zend_ssa_rename(const zend_op_array *op_array, uint32_t build_flags, 
 	zend_ssa_op *fe_fetch_ssa_op = blocks[n].len != 0
 			&& ((end-1)->opcode == ZEND_FE_FETCH_R || (end-1)->opcode == ZEND_FE_FETCH_RW)
 			&& (end-1)->op2_type == IS_CV
-		? &ssa_ops[blocks[n].start + blocks[n].len - 1] : NULL;
-	for (i = 0; i < blocks[n].successors_count; i++) {
+		? &ssa_ops[blocks[n].start + blocks[n].len - 1] : NULL; //特殊的关注了一下fe_fetch, 详细原因见后.
+	for (i = 0; i < blocks[n].successors_count; i++) { //开始遍历successors
 		int succ = blocks[n].successors[i];
 		zend_ssa_phi *p;
 		for (p = ssa_blocks[succ].phis; p; p = p->next) {
-			if (p->pi == n) {
+			if (p->pi == n) {//p->pi == from block_num;
 				/* e-SSA Pi */
-				if (p->has_range_constraint) {
+				if (p->has_range_constraint) {//给pi中range var也rename
 					if (p->constraint.range.min_var >= 0) {
 						p->constraint.range.min_ssa_var = var[p->constraint.range.min_var];
 					}
@@ -833,32 +840,32 @@ static int zend_ssa_rename(const zend_op_array *op_array, uint32_t build_flags, 
 						p->constraint.range.max_ssa_var = var[p->constraint.range.max_var];
 					}
 				}
-				for (j = 0; j < blocks[succ].predecessors_count; j++) {
+				for (j = 0; j < blocks[succ].predecessors_count; j++) {//看当前pi所在block的predecessor，修改source var name？ 这条edge是唯一确定的，因为pi依赖edge.
 					p->sources[j] = var[p->var];
 				}
-				if (p->ssa_var < 0) {
+				if (p->ssa_var < 0) {//pi对应var rename；
 					p->ssa_var = ssa_vars_count;
 					ssa_vars_count++;
 				}
-			} else if (p->pi < 0) {
+			} else if (p->pi < 0) {//正常的phi
 				/* Normal Phi */
-				for (j = 0; j < blocks[succ].predecessors_count; j++)
+				for (j = 0; j < blocks[succ].predecessors_count; j++) //需要把指向当前的block的这条edge找出来
 					if (ssa->cfg.predecessors[blocks[succ].predecessor_offset + j] == n) {
 						break;
 					}
-				ZEND_ASSERT(j < blocks[succ].predecessors_count);
-				p->sources[j] = var[p->var];
-				if (fe_fetch_ssa_op && i == 0 && p->sources[j] == fe_fetch_ssa_op->op2_def) {
+				ZEND_ASSERT(j < blocks[succ].predecessors_count);//这里弄个assert干啥? 有可能没找到？
+				p->sources[j] = var[p->var]; //修改来自当前block的ssa_var_name
+				if (fe_fetch_ssa_op && i == 0 && p->sources[j] == fe_fetch_ssa_op->op2_def) {//这是一条foreach的exit edge, 当执行fe_fetch退出的时候，op2_def是没有生效的，而是原来的op2_use在这里起作用的， 所以退出指向那个bb的phi的source应该是op2_use.
 					/* On the exit edge of an FE_FETCH, use the pre-modification value instead. */
 					p->sources[j] = fe_fetch_ssa_op->op2_use;
 				}
 			}
 		}
-		for (p = ssa_blocks[succ].phis; p && (p->pi >= 0); p = p->next) {
+		for (p = ssa_blocks[succ].phis; p && (p->pi >= 0); p = p->next) { //又重新遍历pis干啥呢?
 			if (p->pi == n) {
 				zend_ssa_phi *q = p->next;
 				while (q) {
-					if (q->pi < 0 && q->var == p->var) {
+					if (q->pi < 0 && q->var == p->var) {//phi和pi是相互独立的，但是phi可能使用到pi_var_name，前面更新sources，只更新了来自predecessor的var. 所以这里还要二次的rename.
 						for (j = 0; j < blocks[succ].predecessors_count; j++) {
 							if (ssa->cfg.predecessors[blocks[succ].predecessor_offset + j] == n) {
 								break;
@@ -878,7 +885,7 @@ static int zend_ssa_rename(const zend_op_array *op_array, uint32_t build_flags, 
 	j = blocks[n].children;
 	while (j >= 0) {
 		// FIXME: Tail call optimization?
-		if (zend_ssa_rename(op_array, build_flags, ssa, var, j) != SUCCESS)
+		if (zend_ssa_rename(op_array, build_flags, ssa, var, j) != SUCCESS) //深度遍历dominator tree!
 			return FAILURE;
 		j = blocks[j].next_child;
 	}
@@ -904,7 +911,7 @@ int zend_build_ssa(zend_arena **arena, const zend_script *script, const zend_op_
 	ALLOCA_FLAG(dfg_use_heap)
 	ALLOCA_FLAG(var_use_heap)
 
-	if ((blocks_count * (op_array->last_var + op_array->T)) > 4 * 1024 * 1024) {
+	if ((blocks_count * (op_array->last_var + op_array->T)) > 4 * 1024 * 1024) { //how big?
 	    /* Don't build SSA for very big functions */
 		return FAILURE;
 	}
@@ -914,10 +921,10 @@ int zend_build_ssa(zend_arena **arena, const zend_script *script, const zend_op_
 
 	/* Compute Variable Liveness */
 	dfg.vars = op_array->last_var + op_array->T;
-	dfg.size = set_size = zend_bitset_len(dfg.vars);
-	dfg.tmp = do_alloca((set_size * sizeof(zend_ulong)) * (blocks_count * 4 + 1), dfg_use_heap);
-	memset(dfg.tmp, 0, (set_size * sizeof(zend_ulong)) * (blocks_count * 4 + 1));
-	dfg.def = dfg.tmp + set_size;
+	dfg.size = set_size = zend_bitset_len(dfg.vars);//每个单位bitmap长度应该是当前函数的变量个数
+	dfg.tmp = do_alloca((set_size * sizeof(zend_ulong)) * (blocks_count * 4 + 1), dfg_use_heap);//每个BB有一个独立的单位bitmap
+	memset(dfg.tmp, 0, (set_size * sizeof(zend_ulong)) * (blocks_count * 4 + 1));//4个关注变量不同属性的维度，所以需要4 * blocks_count.
+	dfg.def = dfg.tmp + set_size; //这个是个临时单位bitmap，给其他的单位bitmap进行运算的时候，提供帮助
 	dfg.use = dfg.def + set_size * blocks_count;
 	dfg.in  = dfg.use + set_size * blocks_count;
 	dfg.out = dfg.in  + set_size * blocks_count;
@@ -942,6 +949,8 @@ int zend_build_ssa(zend_arena **arena, const zend_script *script, const zend_op_
 	 * happen before def propagation. */
 	place_essa_pis(arena, script, op_array, build_flags, ssa, &dfg);
 
+
+	/*merge node*/
 	/* SSA construction, Step 1: Propagate "def" sets in merge points */
 	do {
 		changed = 0;
@@ -955,18 +964,18 @@ int zend_build_ssa(zend_arena **arena, const zend_script *script, const zend_op_
 					/* Prevent any values from flowing into irreducible loops by
 					   replacing all incoming values with explicit phis.  The
 					   register allocator depends on this property.  */
-					zend_bitset_union(phi_j, in + (j * set_size), set_size);
+					zend_bitset_union(phi_j, in + (j * set_size), set_size); /*不可约环，有不止一个loop header 为什么所有进来的变量都需要一个phi呢？*/
 				} else {
 					for (k = 0; k < blocks[j].predecessors_count; k++) {
 						i = ssa->cfg.predecessors[blocks[j].predecessor_offset + k];
-						while (i != -1 && i != blocks[j].idom) {
+						while (i != -1 && i != blocks[j].idom) {/*所有变量def所在基本块的支配边界都应该插phi，这里充分考虑了变量的use情况， 这里的-1应该是特殊的情况for entry?*/
 							zend_bitset_union_with_intersection(
 								phi_j, phi_j, def + (i * set_size), in + (j * set_size), set_size);
-							i = blocks[i].idom;
+							i = blocks[i].idom; /*dominance frontiers 在这里作用*/
 						}
 					}
 				}
-				if (!zend_bitset_subset(phi_j, def_j, set_size)) {
+				if (!zend_bitset_subset(phi_j, def_j, set_size)) { /*考虑 phi 引入的新的definition*/
 					zend_bitset_union(def_j, phi_j, set_size);
 					changed = 1;
 				}
@@ -981,7 +990,7 @@ int zend_build_ssa(zend_arena **arena, const zend_script *script, const zend_op_
 		return FAILURE;
 	}
 
-	for (j = 0; j < blocks_count; j++) {
+	for (j = 0; j < blocks_count; j++) {//前面是标记哪些地方需要插入phis，这下面的一步就是真实的插入phi.
 		if ((blocks[j].flags & ZEND_BB_REACHABLE) == 0) {
 			continue;
 		}
@@ -990,15 +999,15 @@ int zend_build_ssa(zend_arena **arena, const zend_script *script, const zend_op_
 				zend_ssa_phi *phi = zend_arena_calloc(arena, 1,
 					ZEND_MM_ALIGNED_SIZE(sizeof(zend_ssa_phi)) +
 					ZEND_MM_ALIGNED_SIZE(sizeof(int) * blocks[j].predecessors_count) +
-					sizeof(void*) * blocks[j].predecessors_count);
+					sizeof(void*) * blocks[j].predecessors_count);//phi的metadata的数量和前驱的个数有关
 
-				phi->sources = (int*)(((char*)phi) + ZEND_MM_ALIGNED_SIZE(sizeof(zend_ssa_phi)));
+				phi->sources = (int*)(((char*)phi) + ZEND_MM_ALIGNED_SIZE(sizeof(zend_ssa_phi))); //留个小问题source存储这一串int
 				memset(phi->sources, 0xff, sizeof(int) * blocks[j].predecessors_count);
-				phi->use_chains = (zend_ssa_phi**)(((char*)phi->sources) + ZEND_MM_ALIGNED_SIZE(sizeof(int) * ssa->cfg.blocks[j].predecessors_count));
+				phi->use_chains = (zend_ssa_phi**)(((char*)phi->sources) + ZEND_MM_ALIGNED_SIZE(sizeof(int) * ssa->cfg.blocks[j].predecessors_count));//额外分配的一个source，一个use_chain.
 
-				phi->pi = -1;
-				phi->var = i;
-				phi->ssa_var = -1;
+				phi->pi = -1; //-1表示phi
+				phi->var = i; //哪个变量对应的phi
+				phi->ssa_var = -1; // rename之后的变量命
 
 				/* Place phis after pis */
 				{
@@ -1009,7 +1018,7 @@ int zend_build_ssa(zend_arena **arena, const zend_script *script, const zend_op_
 						}
 						pp = &(*pp)->next;
 					}
-					phi->next = *pp;
+					phi->next = *pp; //这是个什么顺序呢
 					*pp = phi;
 				}
 			} ZEND_BITSET_FOREACH_END();
@@ -1021,11 +1030,11 @@ int zend_build_ssa(zend_arena **arena, const zend_script *script, const zend_op_
 	}
 
 	/* SSA construction, Step 3: Renaming */
-	ssa->ops = zend_arena_calloc(arena, op_array->last, sizeof(zend_ssa_op));
+	ssa->ops = zend_arena_calloc(arena, op_array->last, sizeof(zend_ssa_op));//每一行opline对应新的zend_ssa_op
 	memset(ssa->ops, 0xff, op_array->last * sizeof(zend_ssa_op));
 	memset(var + op_array->last_var, 0xff, op_array->T * sizeof(int));
 	/* Create uninitialized SSA variables for each CV */
-	for (j = 0; j < op_array->last_var; j++) {
+	for (j = 0; j < op_array->last_var; j++) {//为什么只初始化cv呢？ 因为tmp_var不会被直接使用，必先定义.
 		var[j] = j;
 	}
 	ssa->vars_count = op_array->last_var;
@@ -1052,23 +1061,23 @@ int zend_ssa_compute_use_def_chains(zend_arena **arena, const zend_op_array *op_
 	}
 	ssa_vars = ssa->vars;
 
-	for (i = 0; i < op_array->last_var; i++) {
+	for (i = 0; i < op_array->last_var; i++) { //初始化cv
 		ssa_vars[i].var = i;
 		ssa_vars[i].scc = -1;
 		ssa_vars[i].definition = -1;
 		ssa_vars[i].use_chain = -1;
 	}
-	for (i = op_array->last_var; i < ssa->vars_count; i++) {
+	for (i = op_array->last_var; i < ssa->vars_count; i++) {//初始化tmp_var
 		ssa_vars[i].var = -1;
 		ssa_vars[i].scc = -1;
 		ssa_vars[i].definition = -1;
 		ssa_vars[i].use_chain = -1;
 	}
 
-	for (i = op_array->last - 1; i >= 0; i--) {
+	for (i = op_array->last - 1; i >= 0; i--) {//遍历zend_ssa_op.
 		zend_ssa_op *op = ssa->ops + i;
 
-		if (op->op1_use >= 0) {
+		if (op->op1_use >= 0) {//这个use_chain结构型如  var_def -> var_use_location -> var_use_location -> ... -1
 			op->op1_use_chain = ssa_vars[op->op1_use].use_chain;
 			ssa_vars[op->op1_use].use_chain = i;
 		}
@@ -1080,7 +1089,7 @@ int zend_ssa_compute_use_def_chains(zend_arena **arena, const zend_op_array *op_
 			op->res_use_chain = ssa_vars[op->result_use].use_chain;
 			ssa_vars[op->result_use].use_chain = i;
 		}
-		if (op->op1_def >= 0) {
+		if (op->op1_def >= 0) {//每个ssa var都只有一次definition
 			ssa_vars[op->op1_def].var = EX_VAR_TO_NUM(op_array->opcodes[i].op1.var);
 			ssa_vars[op->op1_def].definition = i;
 		}
@@ -1094,17 +1103,17 @@ int zend_ssa_compute_use_def_chains(zend_arena **arena, const zend_op_array *op_
 		}
 	}
 
-	for (i = 0; i < ssa->cfg.blocks_count; i++) {
+	for (i = 0; i < ssa->cfg.blocks_count; i++) {//上面可以理解为一个基本块内的use-def-chain，下面是在构造基本块之间phi函数的use-def,
 		zend_ssa_phi *phi = ssa->blocks[i].phis;
 		while (phi) {
 			phi->block = i;
-			ssa_vars[phi->ssa_var].var = phi->var;
+			ssa_vars[phi->ssa_var].var = phi->var;//更新phi引入的definition
 			ssa_vars[phi->ssa_var].definition_phi = phi;
 			if (phi->pi >= 0) {
 				zend_ssa_phi *p;
 
-				ZEND_ASSERT(phi->sources[0] >= 0);
-				p = ssa_vars[phi->sources[0]].phi_use_chain;
+				ZEND_ASSERT(phi->sources[0] >= 0); //pi只来自一个source
+				p = ssa_vars[phi->sources[0]].phi_use_chain; 
 				while (p && p != phi) {
 					p = zend_ssa_next_use_phi(ssa, phi->sources[0], p);
 				}
