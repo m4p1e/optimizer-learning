@@ -696,9 +696,10 @@ int zend_cfg_compute_dominators_tree(const zend_op_array *op_array, zend_cfg *cf
 
 	/* FIXME: move declarations */
 	blocks[0].idom = 0;
-	do {
 		changed = 0;
-		/* Iterating in RPO here would converge faster */
+		/* Iterating in RPO(reverse postorder) here would converge faster 
+		   这里提到的RPO可以使得predecessor尽可能早的被处理，使得后续predecessor的dominator操作收敛更快. 
+		*/
 		for (j = 1; j < blocks_count; j++) {
 			int idom = -1;
 
