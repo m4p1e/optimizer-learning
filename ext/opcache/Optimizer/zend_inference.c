@@ -176,8 +176,8 @@ static void zend_ssa_check_scc_var(const zend_op_array *op_array, zend_ssa *ssa,
 #endif
 
 	dfs[var] = *index;
-	(*index)++;
-	root[var] = var;
+	(*index)++;//dfs order
+	root[var] = var;//???
 
 	FOR_EACH_VAR_USAGE(var, CHECK_SCC_VAR);
 
@@ -216,10 +216,10 @@ int zend_ssa_find_sccs(const zend_op_array *op_array, zend_ssa *ssa) /* {{{ */
 	ALLOCA_FLAG(root_use_heap)
 	ALLOCA_FLAG(stack_use_heap)
 
-	dfs = do_alloca(sizeof(int) * ssa->vars_count, dfs_use_heap);
+	dfs = do_alloca(sizeof(int) * ssa->vars_count, dfs_use_heap);//深度生成树的生成序
 	memset(dfs, -1, sizeof(int) * ssa->vars_count);
-	root = do_alloca(sizeof(int) * ssa->vars_count, root_use_heap);
-	ZEND_WORKLIST_STACK_ALLOCA(&stack, ssa->vars_count, stack_use_heap);
+	root = do_alloca(sizeof(int) * ssa->vars_count, root_use_heap); //tarjan算法中的low，这里称为root
+	ZEND_WORKLIST_STACK_ALLOCA(&stack, ssa->vars_count, stack_use_heap);//存储var的stack
 
 	/* Find SCCs using Tarjan's algorithm. */
 	for (j = 0; j < ssa->vars_count; j++) {

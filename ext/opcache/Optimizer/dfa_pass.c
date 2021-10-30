@@ -106,7 +106,8 @@ int zend_dfa_analyze_op_array(zend_op_array *op_array, zend_optimizer_ctx *ctx, 
 	if (zend_ssa_find_false_dependencies(op_array, ssa) != SUCCESS) {
 		return FAILURE;
 	}
-
+	
+	//确定一些强连通图
 	if (zend_ssa_find_sccs(op_array, ssa) != SUCCESS){
 		return FAILURE;
 	}

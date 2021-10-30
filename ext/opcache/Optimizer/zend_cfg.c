@@ -692,7 +692,7 @@ int zend_cfg_compute_dominators_tree(const zend_op_array *op_array, zend_cfg *cf
 	int *postnum = do_alloca(sizeof(int) * cfg->blocks_count, use_heap);
 	memset(postnum, -1, sizeof(int) * cfg->blocks_count);
 	j = 0;
-	compute_postnum_recursive(postnum, &j, cfg, 0);
+	compute_postnum_recursive(postnum, &j, cfg, 0); //后序遍历的order
 
 	/* FIXME: move declarations */
 	blocks[0].idom = 0;
@@ -708,15 +708,30 @@ int zend_cfg_compute_dominators_tree(const zend_op_array *op_array, zend_cfg *cf
 			for (k = 0; k < blocks[j].predecessors_count; k++) {
 				int pred = cfg->predecessors[blocks[j].predecessor_offset + k];
 
+				/*
+					这里有一个小lemma，如果a dom b, 而c如果是b一个前驱，则a dom b. 
+					proof. 可以用反证法来证明，如果a !dom b，那么我们可以找到一个条路径p使得它达到b且不通过a， 再加上edge b -> a, 这样我们就找到了一条路径使得a !dom b，与命题矛盾. 
+				*/
 				if (idom < 0) {
-					if (blocks[pred].idom >= 0)
+					if (blocks[pred].idom >= 0) 
 						idom = pred;
 					continue;
 				}
 
-				if (blocks[pred].idom >= 0) {
-					while (idom != pred) {
-						while (postnum[pred] < postnum[idom]) pred = blocks[pred].idom;
+				/*
+					1. 如果b只有一个前驱c, 那么显然c是b的idom;
+					2. 如果多个前驱c1,c2, 那么如果a同时dom这多个前驱，则a dom b.
+
+					补充lemma:
+					lemma1 给定cfg的深度优先生成树T，若a dom b, 那么a在T上是b的祖先结点. 
+					proof. 同样用反证法，你考虑非祖先结点都会找到一条不经过a到b的路径.
+
+					lemma2 在深度优先生成树T上，若a是b的祖先结点，那么a.postnum > b.postnum 
+				*/
+
+				if (blocks[pred].idom >= 0) { //
+					while (idom != pred) { 
+						while (postnum[pred] < postnum[idom]) pred = blocks[pred].idom; //根据上面两个lemma， 这里while就是为了收敛得到一个最近的dominator同时dom两个前驱
 						while (postnum[idom] < postnum[pred]) idom = blocks[idom].idom;
 					}
 				}
