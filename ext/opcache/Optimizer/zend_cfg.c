@@ -896,7 +896,7 @@ int zend_cfg_identify_loops(const zend_op_array *op_array, zend_cfg *cfg) /* {{{
 			} else {
 				/* Otherwise it's a cross-join edge.  See if it's a branch
 				   to an ancestor on the DJ spanning tree.  */
-				if (entry_times[pred] > entry_times[i] && exit_times[pred] < exit_times[i]) { //对于irreducible loop，它有多个loop headers，我们用生成树上最前面那个block作为loop header;
+				if (entry_times[pred] > entry_times[i] && exit_times[pred] < exit_times[i]) { //判断是不是sp-back edge
 					blocks[i].flags |= ZEND_BB_IRREDUCIBLE_LOOP;
 					flag |= ZEND_FUNC_IRREDUCIBLE;
 					flag &= ~ZEND_FUNC_NO_LOOPS;

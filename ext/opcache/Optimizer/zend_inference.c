@@ -4217,7 +4217,7 @@ int zend_ssa_inference(zend_arena **arena, const zend_op_array *op_array, const 
 	}
 	ssa_var_info = ssa->var_info;
 
-	if (!op_array->function_name) {
+	if (!op_array->function_name) {//为什么在main函数里面cv变量可以是任意的，include by other？
 		for (i = 0; i < op_array->last_var; i++) {
 			ssa_var_info[i].type = MAY_BE_UNDEF | MAY_BE_RC1 | MAY_BE_RCN | MAY_BE_REF | MAY_BE_ANY  | MAY_BE_ARRAY_KEY_ANY | MAY_BE_ARRAY_OF_ANY | MAY_BE_ARRAY_OF_REF;
 			ssa_var_info[i].has_range = 0;
